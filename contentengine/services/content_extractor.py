@@ -1,6 +1,7 @@
-from typing import List
+from typing import List, Dict, Optional
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
+import httpx
 
 from contentengine.core.interfaces import IContentExtractor
 from contentengine.models.content import ContentOutput, MetaTag
@@ -10,21 +11,27 @@ from contentengine.utils.file_utils import FileUtils
 class ContentExtractorService(IContentExtractor):
     """Service for extracting content from web pages."""
     
-    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str]) -> ContentOutput:
+    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[httpx.Response] = None) -> ContentOutput:
         """Extract content from parsed HTML."""
         title = self._extract_title(soup)
         metatags = self._extract_metatags(soup)
         images = self._extract_images(soup, url)
         links = self._extract_links(soup, url)
         
+        # Extract HTTP headers if response is provided
+        http_headers = None
+        if response:
+            http_headers = self._extract_http_headers(response)
+        
         return ContentOutput(
             url=url,
             title=title,
+            http_headers=http_headers,
             metatags=metatags if metatags else None,
             images=images if images else None,
             links=links if links else None,
             scripts=FileUtils.uniq_list(scripts)[:1000] if scripts else None,
-            styles=FileUtils.uniq_list(styles)[:1000] if styles else None,
+            stylesheets=FileUtils.uniq_list(styles)[:1000] if styles else None,
         )
     
     def extract_links(self, soup: BeautifulSoup) -> List[str]:
@@ -70,3 +77,23 @@ class ContentExtractorService(IContentExtractor):
                 absolute_url = urljoin(base_url, href)
                 links.append(absolute_url)
         return FileUtils.uniq_list(links)[:5000]
+    
+    def _extract_http_headers(self, response: httpx.Response) -> Dict[str, str]:
+        """Extract HTTP headers from response."""
+        # Convert headers to dictionary, keeping important headers
+        headers_dict = {}
+        
+        for header_name, header_value in response.headers.items():
+            headers_dict[header_name.lower()] = header_value
+        
+        # Add status code and HTTP version
+        headers_dict['_status_code'] = str(response.status_code)
+        headers_dict['_http_version'] = response.http_version
+        headers_dict['_url'] = str(response.url)
+        
+        # Add redirect history if any
+        if response.history:
+            redirect_urls = [str(r.url) for r in response.history]
+            headers_dict['_redirect_history'] = redirect_urls
+        
+        return headers_dict

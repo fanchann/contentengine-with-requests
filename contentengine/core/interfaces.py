@@ -25,7 +25,7 @@ class IContentExtractor(ABC):
     """Interface for content extraction from web pages."""
     
     @abstractmethod
-    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str]) -> ContentOutput:
+    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[httpx.Response] = None) -> ContentOutput:
         """Extract content from parsed HTML."""
         pass
     

@@ -125,7 +125,7 @@ class PriorityCrawler:
             
             # Extract content
             content_output = self.content_extractor.extract_content(
-                task.url, soup, styles, scripts
+                task.url, soup, styles, scripts, response
             )
             self.content_outputs.append(content_output)
             

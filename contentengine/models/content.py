@@ -15,6 +15,9 @@ class ContentOutput(BaseModel):
     """Complete content output for a crawled page."""
     url: AnyHttpUrl = Field(..., description="Original url of page")
     title: str = Field(..., description="Title of page")
+    http_headers: Optional[dict] = Field(
+        None, description="HTTP headers from response"
+    )
     metatags: Optional[List[MetaTag]] = Field(
         None, description="List of meta tags in page"
     )
