@@ -39,3 +39,6 @@ class ContentOutput(BaseModel):
     screenshot_path: Optional[str] = Field(
         None, description="Path to screenshot image file"
     )
+    cannonical_url: Optional[AnyHttpUrl] = Field(
+        None, description="Cannonical URL if specified in page"
+    )

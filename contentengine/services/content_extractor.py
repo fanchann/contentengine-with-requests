@@ -46,6 +46,7 @@ class ContentExtractorService(IContentExtractor):
             scripts=scripts if scripts else None,
             stylesheets=stylesheets if stylesheets else None,
             screenshot_path=screenshot_path,
+            cannonical_url=self._get_cannonical_url(soup, url)
         )
     
     def extract_links(self, soup: BeautifulSoup) -> List[str]:
@@ -134,24 +135,32 @@ class ContentExtractorService(IContentExtractor):
                 scripts.add(fixed_src)
         return list(scripts)
 
-    def get_stylesheets(self, soup: BeautifulSoup, url: str) -> List[Dict[str, Any]]:
-        """Extract stylesheet information from HTML."""
+    def get_stylesheets(self, soup: BeautifulSoup, url: str) -> List[str]:
+        """Extract stylesheet URLs from HTML."""
         base_url = URL(url)
         stylesheets = []
         
-        for tag in soup.find_all("link"):
+        for tag in soup.find_all("link", rel="stylesheet"):
             href = tag.get("href")
             if href:
                 if not href.startswith(("http://", "https://")):
                     href = str(base_url.join(href))
-
-                attrs = dict(tag.attrs)
-                attrs["href"] = href
-                stylesheets.append(attrs)
+                stylesheets.append(href)
         return stylesheets
     
     def _extract_http_headers(self, response: object) -> Optional[Dict[str, str]]:
         """Extract HTTP headers from response object."""
         if hasattr(response, 'headers'):
             return dict(response.headers)
+        return None
+    
+    def _get_cannonical_url(self, soup: BeautifulSoup, base_url: str) -> Optional[str]:
+        """Extract canonical URL from HTML."""
+        link_tag = soup.find("link", rel="canonical")
+        if link_tag and link_tag.get("href"):
+            href = link_tag.get("href")
+            if href.startswith(("http://", "https://")):
+                return href
+            else:
+                return urljoin(base_url, href)
         return None
