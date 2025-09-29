@@ -1,10 +1,11 @@
 from contentengine.models.config import CrawlerConfig
-from contentengine.services.http_client import HttpClientService
+from contentengine.services.playwright_http_client import PlaywrightHttpClientService
 from contentengine.services.url_normalizer import UrlNormalizerService
 from contentengine.services.content_extractor import ContentExtractorService
 from contentengine.services.asset_downloader import AssetDownloaderService
 from contentengine.services.output_writer import OutputWriterService
 from contentengine.services.task_queue import TaskQueueService
+from contentengine.services.s3_service import S3Service
 from contentengine.handlers.crawler import PriorityCrawler
 
 
@@ -24,13 +25,14 @@ class CrawlerContainer:
             content_extractor=self.get_content_extractor(),
             asset_downloader=self.get_asset_downloader(),
             output_writer=self.get_output_writer(),
-            task_queue=self.get_task_queue()
+            task_queue=self.get_task_queue(),
+            s3_service=self.get_s3_service()
         )
     
-    def get_http_client(self) -> HttpClientService:
+    def get_http_client(self) -> PlaywrightHttpClientService:
         """Get HTTP client service."""
         if 'http_client' not in self._services:
-            self._services['http_client'] = HttpClientService(self.config)
+            self._services['http_client'] = PlaywrightHttpClientService(self.config)
         return self._services['http_client']
     
     def get_url_normalizer(self) -> UrlNormalizerService:
@@ -50,7 +52,8 @@ class CrawlerContainer:
         if 'asset_downloader' not in self._services:
             self._services['asset_downloader'] = AssetDownloaderService(
                 http_client=self.get_http_client(),
-                url_normalizer=self.get_url_normalizer()
+                url_normalizer=self.get_url_normalizer(),
+                s3_service=self.get_s3_service()
             )
         return self._services['asset_downloader']
     
@@ -67,3 +70,9 @@ class CrawlerContainer:
         if 'task_queue' not in self._services:
             self._services['task_queue'] = TaskQueueService()
         return self._services['task_queue']
+    
+    def get_s3_service(self) -> S3Service:
+        """Get S3 service."""
+        if 's3_service' not in self._services:
+            self._services['s3_service'] = S3Service(self.config)
+        return self._services['s3_service']

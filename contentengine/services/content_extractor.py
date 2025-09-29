@@ -1,7 +1,6 @@
 from typing import List, Dict, Optional
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
-import httpx
 
 from contentengine.core.interfaces import IContentExtractor
 from contentengine.models.content import ContentOutput, MetaTag
@@ -11,7 +10,7 @@ from contentengine.utils.file_utils import FileUtils
 class ContentExtractorService(IContentExtractor):
     """Service for extracting content from web pages."""
     
-    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[httpx.Response] = None) -> ContentOutput:
+    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[object] = None) -> ContentOutput:
         """Extract content from parsed HTML."""
         title = self._extract_title(soup)
         metatags = self._extract_metatags(soup)
@@ -20,8 +19,12 @@ class ContentExtractorService(IContentExtractor):
         
         # Extract HTTP headers if response is provided
         http_headers = None
+        screenshot_path = None
         if response:
             http_headers = self._extract_http_headers(response)
+            # Get screenshot path if available
+            if hasattr(response, 'screenshot_path'):
+                screenshot_path = response.screenshot_path
         
         return ContentOutput(
             url=url,
@@ -32,6 +35,7 @@ class ContentExtractorService(IContentExtractor):
             links=links if links else None,
             scripts=FileUtils.uniq_list(scripts)[:1000] if scripts else None,
             stylesheets=FileUtils.uniq_list(styles)[:1000] if styles else None,
+            screenshot_path=screenshot_path,
         )
     
     def extract_links(self, soup: BeautifulSoup) -> List[str]:
@@ -78,22 +82,38 @@ class ContentExtractorService(IContentExtractor):
                 links.append(absolute_url)
         return FileUtils.uniq_list(links)[:5000]
     
-    def _extract_http_headers(self, response: httpx.Response) -> Dict[str, str]:
+    def _extract_http_headers(self, response: object) -> Dict[str, str]:
         """Extract HTTP headers from response."""
         # Convert headers to dictionary, keeping important headers
         headers_dict = {}
         
-        for header_name, header_value in response.headers.items():
-            headers_dict[header_name.lower()] = header_value
+        # Handle both httpx.Response and PlaywrightResponse
+        if hasattr(response, 'headers'):
+            # Handle headers - could be dict or Headers object
+            if hasattr(response.headers, 'items'):
+                for header_name, header_value in response.headers.items():
+                    headers_dict[header_name.lower()] = header_value
+            else:
+                # Assume it's already a dict
+                for header_name, header_value in response.headers.items():
+                    headers_dict[header_name.lower()] = header_value
         
         # Add status code and HTTP version
-        headers_dict['_status_code'] = str(response.status_code)
-        headers_dict['_http_version'] = response.http_version
-        headers_dict['_url'] = str(response.url)
+        if hasattr(response, 'status_code'):
+            headers_dict['_status_code'] = str(response.status_code)
+        
+        if hasattr(response, 'http_version'):
+            headers_dict['_http_version'] = response.http_version
+        
+        if hasattr(response, 'url'):
+            headers_dict['_url'] = str(response.url)
         
         # Add redirect history if any
-        if response.history:
-            redirect_urls = [str(r.url) for r in response.history]
-            headers_dict['_redirect_history'] = redirect_urls
+        if hasattr(response, 'history') and response.history:
+            if isinstance(response.history, list):
+                headers_dict['_redirect_history'] = [str(url) for url in response.history]
+            else:
+                redirect_urls = [str(r.url) for r in response.history]
+                headers_dict['_redirect_history'] = redirect_urls
         
         return headers_dict

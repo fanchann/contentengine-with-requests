@@ -1,0 +1,510 @@
+"""Playwright-based HTTP client service implementation."""
+
+import asyncio
+import os
+import time
+from typing import Dict, Optional, List
+from urllib.parse import urlparse
+import re
+
+from playwright.async_api import (
+    async_playwright,
+    Browser,
+    BrowserContext,
+    Page,
+    Response,
+    Playwright,
+    ProxySettings,
+)
+# from loguru import logger
+import async_timeout
+
+from contentengine.core.interfaces import IHttpClient
+from contentengine.models.config import CrawlerConfig
+from contentengine.utils.url_utils import UrlUtils
+
+
+class PlaywrightResponse:
+    """Wrapper to make Playwright response compatible with httpx.Response interface."""
+    
+    def __init__(self, response: Response, text_content: str, binary_content: bytes = None):
+        self._response = response
+        self._text = text_content
+        self._content = binary_content
+        self.status_code = response.status
+        self.headers = dict(response.headers)
+        self.url = response.url
+        self.http_version = "HTTP/1.1"
+        self.history = []
+        self.screenshot_path = None
+        
+    @property
+    def text(self) -> str:
+        return self._text
+    
+    @property
+    def content(self) -> bytes:
+        """Return binary content."""
+        if self._content is not None:
+            return self._content
+        return self._text.encode('utf-8')
+    
+    def raise_for_status(self):
+        """Raise an exception for bad status codes."""
+        if self.status_code >= 400:
+            raise Exception(f"HTTP {self.status_code} for {self.url}")
+
+
+class BrowserManager:
+    """Manages Playwright browser instances and contexts."""
+    
+    def __init__(
+        self, 
+        pr: Playwright, 
+        config: CrawlerConfig,
+        max_page_limit: Optional[int] = None, 
+        use_single_browser: bool = True
+    ):
+        self.pr = pr
+        self.config = config
+        self.max_page_limit = max_page_limit or int(os.environ.get("PLAYWRIGHT_MAX_PAGES", "10"))
+        self.use_single_browser = use_single_browser
+        self.browsers: List[Browser] = []
+        self.contexts: List[BrowserContext] = []
+        self._user_agent_index = 0
+
+    async def get_or_create_context(
+        self, proxy: Optional[ProxySettings] = None
+    ) -> BrowserContext:
+        """Get existing context or create new one."""
+        if self.use_single_browser:
+            print("Creating new context")
+            return await self._create_new_context(proxy=proxy)
+        else:
+            # Find context with available page slots
+            for ctx in self.contexts:
+                if len(ctx.pages) < self.max_page_limit:
+                    print("Reusing existing context")
+                    return ctx
+            
+            print("Creating new context - all contexts at max capacity")
+            return await self._create_new_context(proxy=proxy)
+
+    async def _create_new_context(
+        self, proxy: Optional[ProxySettings] = None
+    ) -> BrowserContext:
+        """Create new browser context with optimized settings."""
+        if not self.browsers:
+            await self._create_browser(proxy=proxy)
+        
+        browser = self.browsers[0]
+        
+        ctx = await browser.new_context(
+            user_agent=self._get_rotated_user_agent(),
+            viewport={'width': 1920, 'height': 1080},
+            extra_http_headers=self._get_enhanced_headers(),
+            ignore_https_errors=True,
+            java_script_enabled=True,
+            color_scheme='light',
+            locale="en-US",
+            has_touch=True,
+            bypass_csp=True,
+            proxy=proxy,
+        )
+        
+        # Set timeouts
+        default_timeout = int(os.environ.get("PLAYWRIGHT_TIMEOUT", "30000"))
+        ctx.set_default_timeout(default_timeout)
+        ctx.set_default_navigation_timeout(self.config.timeout_total * 1000)
+        
+        self.contexts.append(ctx)
+        return ctx
+
+    async def _create_browser(self, proxy: Optional[ProxySettings] = None):
+        """Create new browser instance."""
+        headless = bool(int(os.environ.get("CRAWLENGINE_HEADLESS", "1")))
+        
+        browser_args = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu',
+            '--disable-extensions',
+            '--disable-plugins',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI',
+            '--disable-ipc-flooding-protection',
+            '--disable-web-security',
+            '--disable-features=VizDisplayCompositor',
+            '--allow-running-insecure-content'
+        ]
+        
+        browser = await self.pr.chromium.launch(
+            headless=headless,
+            args=browser_args,
+            timeout=0,
+            proxy=proxy
+        )
+        
+        self.browsers.append(browser)
+        print("Browser created successfully")
+
+    async def page_ready(self, page: Page, timeout: float = 120) -> bool:
+        """Wait for page to be completely ready."""
+        try:
+            async with async_timeout.timeout(timeout):
+                while True:
+                    state = await page.evaluate("document.readyState")
+                    if state == "complete":
+                        print("Page is ready!")
+                        return True
+                    await asyncio.sleep(0.5)
+        except asyncio.TimeoutError:
+            print(f"Page ready timeout after {timeout}s")
+            return False
+
+    async def close_all(self):
+        """Close all browsers and contexts."""
+        for ctx in self.contexts:
+            await ctx.close()
+        for browser in self.browsers:
+            await browser.close()
+        self.contexts.clear()
+        self.browsers.clear()
+
+    def _get_enhanced_headers(self) -> Dict[str, str]:
+        """Get enhanced headers for better compatibility."""
+        base_headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Cache-Control": "max-age=0"
+        }
+        
+        base_headers.update(self.config.custom_headers)
+        return base_headers
+    
+    def _get_rotated_user_agent(self) -> str:
+        """Get rotated user agent based on time."""
+        return self.config.user_agents[int(time.time()) % len(self.config.user_agents)]
+
+
+class PageContentHandler:
+    """Handles page content loading and screenshot functionality."""
+    
+    def __init__(self, config: CrawlerConfig):
+        self.config = config
+
+    async def wait_for_complete_loading(self, page: Page):
+        """Comprehensive page loading strategy."""
+        try:
+            # Wait for basic page load
+            await page.wait_for_load_state('networkidle')
+            await page.wait_for_load_state('domcontentloaded')
+            await page.wait_for_timeout(3000)
+            
+            # Wait for CSS stylesheets
+            await self._wait_for_stylesheets(page)
+            
+            # Wait for fonts
+            await self._wait_for_fonts(page)
+            
+            # Wait for JavaScript frameworks
+            await self._wait_for_js_frameworks(page)
+            
+            # Wait for all resources
+            await self._wait_for_all_resources(page)
+            
+        except Exception as e:
+            print(f"Page loading wait failed: {e}")
+
+    async def _wait_for_stylesheets(self, page: Page):
+        """Wait for CSS stylesheets to load."""
+        try:
+            await page.wait_for_function("""
+                () => {
+                    const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+                    const allLoaded = links.every(link => {
+                        return link.sheet && link.sheet.cssRules.length > 0;
+                    });
+                    
+                    const testElement = document.body;
+                    const computedStyle = window.getComputedStyle(testElement);
+                    const hasStyles = computedStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' || 
+                                    computedStyle.color !== 'rgb(0, 0, 0)' ||
+                                    computedStyle.fontFamily !== 'serif';
+                    
+                    return allLoaded || hasStyles;
+                }
+            """, timeout=15000)
+            print("CSS stylesheets loaded successfully")
+        except:
+            print("CSS stylesheet loading timeout")
+
+    async def _wait_for_fonts(self, page: Page):
+        """Wait for fonts to load."""
+        try:
+            await page.wait_for_function("document.fonts.ready", timeout=8000)
+            print("Fonts loaded successfully")
+        except:
+            print("Font loading timeout")
+
+    async def _wait_for_js_frameworks(self, page: Page):
+        """Wait for JavaScript frameworks to initialize."""
+        try:
+            await page.wait_for_function("""
+                () => {
+                    return document.readyState === 'complete' && 
+                           (!window.jQuery || window.jQuery.active === 0) &&
+                           (!window.React || window.React.version);
+                }
+            """, timeout=5000)
+            print("JavaScript frameworks initialized")
+        except:
+            print("JavaScript framework timeout")
+
+    async def _wait_for_all_resources(self, page: Page):
+        """Wait for all page resources to load."""
+        try:
+            await page.wait_for_function("""
+                () => {
+                    const images = Array.from(document.images);
+                    const imagesLoaded = images.every(img => img.complete);
+                    
+                    const videos = Array.from(document.querySelectorAll('video'));
+                    const videosLoaded = videos.every(video => video.readyState >= 3);
+                    
+                    const iframes = Array.from(document.querySelectorAll('iframe'));
+                    const iframesLoaded = iframes.every(iframe => {
+                        try {
+                            return iframe.contentDocument && iframe.contentDocument.readyState === 'complete';
+                        } catch(e) {
+                            return true;
+                        }
+                    });
+                    
+                    const lazyElements = document.querySelectorAll('[data-lazy], [loading="lazy"], .lazy');
+                    const lazyLoaded = Array.from(lazyElements).every(el => {
+                        return el.complete !== false && !el.classList.contains('loading');
+                    });
+                    
+                    return imagesLoaded && videosLoaded && iframesLoaded && lazyLoaded;
+                }
+            """, timeout=10000)
+            print("All resources loaded successfully")
+        except:
+            print("Resource loading timeout")
+
+    async def take_screenshot(self, page: Page, url: str) -> Optional[str]:
+        """Take screenshot of the page."""
+        if not self.config.enable_screenshots:
+            return None
+            
+        try:
+            # Force style recalculation
+            await self._force_style_recalculation(page)
+            
+            # Trigger lazy loading
+            await self._trigger_lazy_loading(page)
+            
+            # Final scroll sequence
+            await self._final_scroll_sequence(page)
+            
+            # Generate screenshot path
+            screenshot_path = self._generate_screenshot_path(url)
+            
+            # Take screenshot
+            await page.screenshot(
+                path=screenshot_path,
+                quality=self.config.screenshot_quality if self.config.screenshot_format == 'jpeg' else None,
+                full_page=True,
+                type=self.config.screenshot_format
+            )
+            
+            print(f"Screenshot saved: {screenshot_path}")
+            return screenshot_path
+            
+        except Exception as e:
+            print(f"Failed to take screenshot for {url}: {e}")
+            return None
+
+    async def _force_style_recalculation(self, page: Page):
+        """Force style recalculation and re-render."""
+        try:
+            await page.evaluate("""
+                () => {
+                    document.body.style.display = 'none';
+                    document.body.offsetHeight;
+                    document.body.style.display = '';
+                    
+                    const elements = document.querySelectorAll('*');
+                    elements.forEach(el => {
+                        window.getComputedStyle(el).getPropertyValue('color');
+                    });
+                }
+            """)
+        except Exception as e:
+            print(f"Style recalculation failed: {e}")
+
+    async def _trigger_lazy_loading(self, page: Page):
+        """Trigger lazy loading for all elements."""
+        try:
+            await page.evaluate("""
+                () => {
+                    const lazyElements = document.querySelectorAll('[data-lazy], [loading="lazy"], .lazy, [data-src]');
+                    lazyElements.forEach(el => {
+                        el.scrollIntoView();
+                        el.dispatchEvent(new Event('scroll'));
+                        el.dispatchEvent(new Event('resize'));
+                        el.dispatchEvent(new Event('load'));
+                        
+                        if (el.dataset.src && !el.src) {
+                            el.src = el.dataset.src;
+                        }
+                    });
+                    
+                    const scrollHeight = document.body.scrollHeight;
+                    const viewportHeight = window.innerHeight;
+                    let currentScroll = 0;
+                    
+                    while (currentScroll < scrollHeight) {
+                        window.scrollTo(0, currentScroll);
+                        currentScroll += viewportHeight / 2;
+                    }
+                }
+            """)
+        except Exception as e:
+            print(f"Lazy loading trigger failed: {e}")
+
+    async def _final_scroll_sequence(self, page: Page):
+        """Perform final scroll sequence."""
+        await page.wait_for_timeout(3000)
+        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+        await page.wait_for_timeout(1500)
+        await page.evaluate('window.scrollTo(0, document.body.scrollHeight / 2)')
+        await page.wait_for_timeout(1000)
+        await page.evaluate('window.scrollTo(0, 0)')
+        await page.wait_for_timeout(1500)
+
+    def _generate_screenshot_path(self, url: str) -> str:
+        """Generate screenshot file path."""
+        domain, _ = UrlUtils.get_domain_info(url)
+        tld, domain_name = UrlUtils.get_tld_and_domain_name(domain)
+        
+        parsed = urlparse(url)
+        path = parsed.path.strip("/")
+        
+        if not path:
+            if parsed.query:
+                url_b64 = UrlUtils.generate_url_base64(url)
+                screenshot_dir = f"results/{tld}/{tld}.{domain_name}/index-{url_b64}"
+            else:
+                screenshot_dir = f"results/{tld}/{tld}.{domain_name}"
+        else:
+            safe_path = re.sub(r"[^\w\-./]", "_", path)
+            if parsed.query:
+                url_b64 = UrlUtils.generate_url_base64(url)
+                screenshot_dir = f"results/{tld}/{tld}.{domain_name}/{safe_path}-{url_b64}"
+            else:
+                screenshot_dir = f"results/{tld}/{tld}.{domain_name}/{safe_path}"
+        
+        os.makedirs(screenshot_dir, exist_ok=True)
+        
+        screenshot_filename = f"screenshot.{self.config.screenshot_format}"
+        return os.path.join(screenshot_dir, screenshot_filename)
+
+
+class PlaywrightHttpClientService(IHttpClient):
+    """HTTP client service using Playwright for better JavaScript support."""
+    
+    def __init__(self, config: CrawlerConfig):
+        self.config = config
+        self.playwright: Optional[Playwright] = None
+        self.browser_manager: Optional[BrowserManager] = None
+        self.content_handler: PageContentHandler = PageContentHandler(config)
+        
+    async def initialize(self):
+        """Initialize Playwright and browser manager."""
+        if self.playwright is None:
+            self.playwright = await async_playwright().start()
+            self.browser_manager = BrowserManager(self.playwright, self.config)
+            print("Playwright initialized")
+    
+    async def get(self, url: str, headers: Dict[str, str]) -> PlaywrightResponse:
+        """Perform HTTP GET request using Playwright."""
+        if not self.browser_manager:
+            await self.initialize()
+            
+        context = await self.browser_manager.get_or_create_context()
+        page = await context.new_page()
+        
+        try:
+            # Set additional headers
+            if headers:
+                await page.set_extra_http_headers(headers)
+            
+            # Navigate to page
+            response = await page.goto(url, 
+                wait_until='networkidle',
+                timeout=30000
+            )
+            
+            if response is None:
+                raise Exception(f"Failed to load page: {url}")
+            
+            # Wait for page to be ready
+            await self.browser_manager.page_ready(page)
+            
+            # Determine content type and handle accordingly
+            content_type = response.headers.get('content-type', '').lower()
+            
+            if 'text/html' in content_type or 'application/xhtml' in content_type:
+                # Handle HTML content
+                await self.content_handler.wait_for_complete_loading(page)
+                content = await page.content()
+                binary_content = None
+                screenshot_path = await self.content_handler.take_screenshot(page, url)
+            else:
+                # Handle binary content (CSS, JS, images, etc.)
+                content = ""
+                binary_content = await response.body()
+                screenshot_path = None
+            
+            # Create response object
+            playwright_response = PlaywrightResponse(response, content, binary_content)
+            
+            if screenshot_path:
+                playwright_response.screenshot_path = screenshot_path
+            
+            # Handle redirects
+            if str(response.url) != url:
+                playwright_response.history = [url]
+            
+            return playwright_response
+            
+        finally:
+            await page.close()
+    
+    async def close(self):
+        """Close Playwright browser and context."""
+        if self.browser_manager:
+            await self.browser_manager.close_all()
+            self.browser_manager = None
+            
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None
+            
+        print("Playwright service closed")

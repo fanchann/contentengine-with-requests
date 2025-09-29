@@ -14,6 +14,18 @@ class CrawlerConfig:
     user_agents: List[str] = None
     custom_headers: Dict[str, str] = None
     
+    # Screenshot configuration
+    enable_screenshots: bool = False
+    screenshot_quality: int = 90
+    screenshot_format: str = "png"
+    
+    # S3/MinIO configuration
+    s3_endpoint: str = None
+    s3_access_key: str = None
+    s3_secret_key: str = None
+    s3_bucket_name: str = "crawler-assets"
+    s3_region: str = "us-east-1"
+    
     def __post_init__(self):
         if self.user_agents is None:
             self.user_agents = [

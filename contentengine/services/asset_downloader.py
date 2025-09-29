@@ -8,14 +8,16 @@ from contentengine.core.interfaces import IAssetDownloader, IHttpClient
 from contentengine.models.task import CrawlTask
 from contentengine.utils.url_utils import UrlUtils
 from contentengine.utils.file_utils import FileUtils
+from contentengine.services.s3_service import S3Service
 
 
 class AssetDownloaderService(IAssetDownloader):
     """Service for downloading and managing web assets."""
     
-    def __init__(self, http_client: IHttpClient, url_normalizer):
+    def __init__(self, http_client: IHttpClient, url_normalizer, s3_service: Optional[S3Service] = None):
         self.http_client = http_client
         self.url_normalizer = url_normalizer
+        self.s3_service = s3_service
     
     async def extract_and_download_assets(self, soup: BeautifulSoup, page_url: str, task: CrawlTask) -> Tuple[List[str], List[str]]:
         """Extract and download internal assets (CSS/JS only from same domain/subdomain)."""
@@ -24,6 +26,8 @@ class AssetDownloaderService(IAssetDownloader):
         # Filter only internal assets
         styles = self._filter_internal_assets(styles, task.root_base_domain)
         scripts = self._filter_internal_assets(scripts, task.root_base_domain)
+        
+        print(f"After filtering: {len(styles)} internal CSS files and {len(scripts)} internal JS files")
         
         if not styles and not scripts:
             return styles, scripts
@@ -99,8 +103,19 @@ class AssetDownloaderService(IAssetDownloader):
         """Filter to keep only internal assets."""
         def is_internal(url: str) -> bool:
             host = urlparse(url).netloc.lower()
-            base = UrlUtils.base_domain(host)
-            return base == root_base_domain or base.endswith(f".{root_base_domain}")
+            # Remove 'www.' prefix if present
+            if host.startswith("www."):
+                host = host[4:]
+            
+            # Check if it's exact match or subdomain
+            exact_match = host == root_base_domain
+            subdomain_match = host.endswith(f".{root_base_domain}")
+            
+            # Special case for GitHub CDN assets
+            github_cdn_match = (root_base_domain == "github.com" and 
+                              host == "github.githubassets.com")
+            
+            return exact_match or subdomain_match or github_cdn_match
         
         return [url for url in assets if is_internal(url)]
     
@@ -174,6 +189,10 @@ class AssetDownloaderService(IAssetDownloader):
                 with open(dest_path, "wb") as f:
                     f.write(response.content)
                 print(f"Downloaded asset: {os.path.basename(dest_path)}")
+                
+                # Upload to S3 if service is available
+                if self.s3_service:
+                    await self._upload_asset_to_s3(dest_path, url)
             else:
                 print(f"Empty asset content for {url}")
                 
@@ -302,3 +321,18 @@ class AssetDownloaderService(IAssetDownloader):
                     css_content = css_content.replace(f'url("{original_url}")', f'url("{local_path}")')
                     css_content = css_content.replace(f"url({original_url})", f"url({local_path})")
                 style_tag.string = css_content
+    
+    async def _upload_asset_to_s3(self, local_path: str, original_url: str):
+        """Upload asset file to S3 with proper folder structure and metadata."""
+        try:
+            # Extract domain info for metadata
+            parsed_url = urlparse(original_url)
+            domain = parsed_url.netloc.lower()
+            
+            # Upload using S3Service with new structure: tld/tld.domain/assets/...
+            result = self.s3_service.upload_asset(local_path, original_url, domain)
+            if result:
+                print(f"Uploaded asset to S3: {os.path.basename(local_path)}")
+            
+        except Exception as e:
+            print(f"Failed to upload asset {local_path} to S3: {e}")

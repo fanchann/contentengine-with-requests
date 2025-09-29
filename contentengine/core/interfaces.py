@@ -11,7 +11,7 @@ class IHttpClient(ABC):
     """Interface for HTTP client operations."""
     
     @abstractmethod
-    async def get(self, url: str, headers: Dict[str, str]) -> httpx.Response:
+    async def get(self, url: str, headers: Dict[str, str]) -> object:
         """Perform HTTP GET request."""
         pass
     
@@ -25,7 +25,7 @@ class IContentExtractor(ABC):
     """Interface for content extraction from web pages."""
     
     @abstractmethod
-    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[httpx.Response] = None) -> ContentOutput:
+    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[object] = None) -> ContentOutput:
         """Extract content from parsed HTML."""
         pass
     

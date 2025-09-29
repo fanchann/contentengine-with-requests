@@ -1,5 +1,5 @@
 import asyncio
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 from datetime import datetime
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -24,7 +24,8 @@ class PriorityCrawler:
         content_extractor: IContentExtractor,
         asset_downloader: IAssetDownloader,
         output_writer: IOutputWriter,
-        task_queue: ITaskQueue
+        task_queue: ITaskQueue,
+        s3_service=None
     ):
         # Dependencies (injected)
         self.config = config
@@ -34,6 +35,7 @@ class PriorityCrawler:
         self.asset_downloader = asset_downloader
         self.output_writer = output_writer
         self.task_queue = task_queue
+        self.s3_service = s3_service
         
         # State
         self.visited: Set[str] = set()
@@ -123,11 +125,25 @@ class PriorityCrawler:
             # Save HTML page
             await self.output_writer.save_html(task.url, html, styles, scripts)
             
+            # Upload HTML to S3 if available
+            if self.s3_service:
+                await self._upload_html_to_s3(task.url)
+            
             # Extract content
             content_output = self.content_extractor.extract_content(
                 task.url, soup, styles, scripts, response
             )
             self.content_outputs.append(content_output)
+            
+            # Upload screenshot to S3 if available
+            if self.s3_service and content_output.screenshot_path:
+                s3_url = await self._upload_screenshot_to_s3(content_output.screenshot_path, task.url)
+                if s3_url:
+                    content_output.screenshot_path = s3_url
+            
+            # Upload assets to S3 if available
+            if self.s3_service:
+                await self._upload_assets_to_s3(task.url)
             
             # Add to CSV data
             self._add_csv_row(task, content_output)
@@ -244,3 +260,102 @@ class PriorityCrawler:
         """Save all outputs."""
         self.output_writer.save_csv(self.csv_data)
         self.output_writer.save_json(self.content_outputs)
+    
+    async def _upload_screenshot_to_s3(self, screenshot_path: str, url: str) -> Optional[str]:
+        """Upload screenshot to S3 and return the public URL."""
+        try:
+            if screenshot_path and self.s3_service:
+                public_url = self.s3_service.upload_screenshot(screenshot_path, url)
+                if public_url:
+                    print(f"Screenshot uploaded to S3: {public_url}")
+                    return public_url
+        except Exception as e:
+            print(f"Failed to upload screenshot to S3: {e}")
+        return None
+    
+    async def _upload_html_to_s3(self, url: str):
+        """Upload HTML file to S3."""
+        try:
+            if not self.s3_service:
+                return
+                
+            # Get HTML file path based on URL structure
+            from contentengine.utils.url_utils import UrlUtils
+            from urllib.parse import urlparse
+            import os
+            
+            domain, _ = UrlUtils.get_domain_info(url)
+            tld, domain_name = UrlUtils.get_tld_and_domain_name(domain)
+            
+            parsed = urlparse(url)
+            path = parsed.path.strip("/")
+            
+            # Determine HTML file path
+            if not path:
+                if parsed.query:
+                    url_b64 = UrlUtils.generate_url_base64(url)
+                    html_path = f"results/{tld}/{tld}.{domain_name}/index-{url_b64}.html"
+                else:
+                    html_path = f"results/{tld}/{tld}.{domain_name}/index.html"
+            else:
+                import re
+                safe_path = re.sub(r"[^\w\-./]", "_", path)
+                if parsed.query:
+                    url_b64 = UrlUtils.generate_url_base64(url)
+                    html_path = f"results/{tld}/{tld}.{domain_name}/{safe_path}-{url_b64}.html"
+                else:
+                    html_path = f"results/{tld}/{tld}.{domain_name}/{safe_path}.html"
+            
+            # Upload HTML file
+            if os.path.exists(html_path):
+                public_url = self.s3_service.upload_html(html_path, url)
+                if public_url:
+                    print(f"HTML uploaded to S3: {os.path.basename(html_path)}")
+            
+        except Exception as e:
+            print(f"Failed to upload HTML to S3: {e}")
+    
+    async def _upload_assets_to_s3(self, url: str):
+        """Upload assets to S3."""
+        try:
+            if not self.s3_service:
+                return
+                
+            # Get asset directory based on URL structure
+            from contentengine.utils.url_utils import UrlUtils
+            from urllib.parse import urlparse
+            import os
+            
+            domain, _ = UrlUtils.get_domain_info(url)
+            tld, domain_name = UrlUtils.get_tld_and_domain_name(domain)
+            
+            parsed = urlparse(url)
+            path = parsed.path.strip("/")
+            
+            # Determine asset directory path
+            if not path:
+                if parsed.query:
+                    url_b64 = UrlUtils.generate_url_base64(url)
+                    asset_dir = f"results/{tld}/{tld}.{domain_name}/index-{url_b64}/assets"
+                else:
+                    asset_dir = f"results/{tld}/{tld}.{domain_name}/assets"
+            else:
+                import re
+                safe_path = re.sub(r"[^\w\-./]", "_", path)
+                if parsed.query:
+                    url_b64 = UrlUtils.generate_url_base64(url)
+                    asset_dir = f"results/{tld}/{tld}.{domain_name}/{safe_path}-{url_b64}/assets"
+                else:
+                    asset_dir = f"results/{tld}/{tld}.{domain_name}/{safe_path}/assets"
+            
+            # Upload all assets in directory
+            if os.path.exists(asset_dir):
+                for root, dirs, files in os.walk(asset_dir):
+                    for file in files:
+                        asset_path = os.path.join(root, file)
+                        public_url = self.s3_service.upload_asset(asset_path, url, url)
+                        if public_url:
+                            print(f"Asset uploaded to S3: {file}")
+                            
+        except Exception as e:
+            print(f"Failed to upload assets to S3: {e}")
