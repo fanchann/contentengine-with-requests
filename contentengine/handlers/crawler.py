@@ -5,6 +5,7 @@ from typing import Dict, List, Set, Optional
 from datetime import datetime
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+import async_timeout
 
 from contentengine.core.interfaces import (
     IHttpClient, IContentExtractor, IAssetDownloader, 
@@ -13,6 +14,9 @@ from contentengine.core.interfaces import (
 from contentengine.models.task import CrawlTask
 from contentengine.models.content import ContentOutput
 from contentengine.models.config import CrawlerConfig
+from contentengine.models.schema import ContentSchema
+
+from master.schema import ResponseSchema, ErrorSchema
 
 
 class PriorityCrawler:
@@ -21,15 +25,15 @@ class PriorityCrawler:
     def __init__(
         self,
         config: CrawlerConfig,
-        http_client: IHttpClient,
-        url_normalizer: IUrlNormalizer,
-        content_extractor: IContentExtractor,
-        asset_downloader: IAssetDownloader,
-        output_writer: IOutputWriter,
-        task_queue: ITaskQueue,
+        http_client=None,
+        url_normalizer=None,
+        content_extractor=None,
+        asset_downloader=None,
+        output_writer=None,
+        task_queue=None,
         s3_service=None
     ):
-        # Dependencies (injected)
+        # Dependencies (injected) - all optional for simple usage
         self.config = config
         self.http_client = http_client
         self.url_normalizer = url_normalizer
@@ -45,7 +49,58 @@ class PriorityCrawler:
         self.content_outputs: List[ContentOutput] = []
         self.lock = asyncio.Lock()
         self.start_time: Optional[float] = None
-    
+
+    async def crawl(self, msg: ContentSchema, browser_manager) -> ResponseSchema[ContentOutput]:
+        """New crawl method for master integration."""
+        import asyncio
+        import async_timeout
+        
+        try:
+            # Use timeout from config (convert from milliseconds to seconds)
+            timeout_seconds = self.config.timeout_ms / 1000.0
+            
+            async with async_timeout.timeout(timeout_seconds):
+                # Simple single page crawl for now
+                from contentengine.services.playwright_http_client import PlaywrightHttpClientService
+                from contentengine.services.content_extractor import ContentExtractorService
+                
+                # Use playwright http client
+                http_client = PlaywrightHttpClientService(self.config, browser_manager)
+                content_extractor = ContentExtractorService()
+                
+                # Fetch and parse page
+                response = await http_client.get(str(msg.url), {})
+                html = response.text
+                
+                soup = BeautifulSoup(html, "html.parser")
+                if not soup:
+                    raise Exception("Failed to parse HTML")
+                
+                # Extract content
+                content_output = content_extractor.extract_content(
+                    str(msg.url), soup, [], [], response
+                )
+                
+                return ResponseSchema(
+                    module="contentengine",
+                    status="success",
+                    data=content_output
+                )
+                
+        except asyncio.TimeoutError:
+            return ResponseSchema(
+                module="contentengine",
+                status="error",
+                data=ErrorSchema(type="TimeoutError", message=f"Crawling timeout after {timeout_seconds}s")
+            )
+            
+        except Exception as e:
+            return ResponseSchema(
+                module="contentengine",
+                status="error",
+                data=ErrorSchema(type="CrawlError", message=str(e))
+            )
+
     async def crawl_async(self, start_url: str) -> List[ContentOutput]:
         """Main crawling method."""
         # Initialize start time for timeout tracking

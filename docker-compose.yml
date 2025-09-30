@@ -1,0 +1,50 @@
+name: crawlengine-modules
+
+x-logging: &logging
+  driver: "json-file"
+  options:
+    max-size: "1g"
+    max-file: "5"
+
+networks:
+  default:
+    external: true
+    name: crawlengine-network
+
+secrets:
+  nats_user_credentials:
+    file: ${NATS_USER_CREDENTIALS}
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+  env_file: .env
+  restart: unless-stopped
+  logging: *logging
+  secrets:
+    - nats_user_credentials
+  environment:
+    # NATS_URLS: nats://cluster1:4222,nats://cluster2:4223,nats://cluster3:4224,nats://cluster4:4225,nats://cluster5:4226
+    NATS_USER_CREDENTIALS: /run/secrets/nats_user_credentials
+  volumes:
+    - playwright_cache:/root/.cache/ms-playwright
+    - ./results:/app/results
+  shm_size: "1gb"
+
+volumes:
+  playwright_cache:
+
+services:
+  # this service include all modules (google, bing, duckduckgo, brave, yandex)
+  # searchengine:
+  #   <<: *app
+  #   command: faststream run searchengine.main:app
+  # this service include all modules (detail)
+  # contentengine:
+  #   <<: *app
+  #   command: faststream run contentengine.main:app
+  contentengine-detail:
+    <<: *app
+    command: faststream run contentengine.main:app

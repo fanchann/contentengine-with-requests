@@ -38,38 +38,50 @@ class PlaywrightResponse:
 class PlaywrightHttpClientService(IHttpClient):
     """Ultra-simplified Playwright HTTP client."""
     
-    def __init__(self, config: CrawlerConfig):
+    def __init__(self, config: CrawlerConfig, browser_manager=None):
         self.config = config
+        self.browser_manager = browser_manager
         self.playwright, self.browser, self.context = None, None, None
         self._semaphore = asyncio.Semaphore(3)
         
     async def initialize(self):
-        """Quick initialization."""
-        if not self.playwright:
-            self.playwright = await async_playwright().start()
-            browser_args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
-            self.browser = await self.playwright.chromium.launch(
-                headless=bool(int(os.environ.get("CRAWLENGINE_HEADLESS", "1"))), 
-                args=browser_args, timeout=60000)
-            
-            user_agent = self.config.user_agents[int(time.time()) % len(self.config.user_agents)]
-            headers = {"Accept": "text/html,application/xhtml+xml,*/*;q=0.8", **self.config.custom_headers}
-            
-            self.context = await self.browser.new_context(
-                user_agent=user_agent, viewport={'width': 1920, 'height': 1080},
-                extra_http_headers=headers, ignore_https_errors=True)
-            self.context.set_default_timeout(30000)
-            print("Playwright initialized")
+        """Quick initialization using browser_manager."""
+        if not self.browser_manager:
+            # Fallback to old behavior if no browser_manager provided
+            if not self.playwright:
+                self.playwright = await async_playwright().start()
+                browser_args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
+                self.browser = await self.playwright.chromium.launch(
+                    headless=bool(int(os.environ.get("CRAWLENGINE_HEADLESS", "1"))), 
+                    args=browser_args, timeout=60000)
+                
+                user_agent = self.config.user_agents[int(time.time()) % len(self.config.user_agents)]
+                headers = {"Accept": "text/html,application/xhtml+xml,*/*;q=0.8", **self.config.custom_headers}
+                
+                self.context = await self.browser.new_context(
+                    user_agent=user_agent, viewport={'width': 1920, 'height': 1080},
+                    extra_http_headers=headers, ignore_https_errors=True)
+                self.context.set_default_timeout(30000)
+                print("Playwright initialized (fallback)")
+        else:
+            # Use browser_manager from master layer
+            print("Using browser_manager from master layer")
     
     async def get(self, url: str, headers: Dict[str, str]) -> PlaywrightResponse:
         """Simple GET with basic optimization."""
         async with self._semaphore:
-            if not self.context:
+            # Get context from browser_manager
+            if self.browser_manager:
+                context = await self.browser_manager.get_or_create()
+            elif self.context:
+                context = self.context
+            else:
                 await self.initialize()
+                context = self.context
             
             page = None
             try:
-                page = await self.context.new_page()
+                page = await context.new_page()
                 if headers:
                     await page.set_extra_http_headers(headers)
                 
