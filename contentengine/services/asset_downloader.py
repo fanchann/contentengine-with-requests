@@ -40,6 +40,62 @@ class AssetDownloaderService(IAssetDownloader):
         
         return styles, scripts
     
+    async def download_favicon(self, soup: BeautifulSoup, page_url: str) -> Optional[str]:
+        """Download favicon and return path to saved file."""
+        from contentengine.services.content_extractor import ContentExtractorService
+        
+        # Use ContentExtractorService to get favicon URL
+        extractor = ContentExtractorService()
+        favicon_url = extractor.get_favicon_url(soup, page_url)
+        
+        if not favicon_url:
+            return None
+        
+        try:
+            # Setup download directory structure same as page
+            base_dir = self._setup_download_directory(page_url)
+            
+            # Create favicon directory
+            favicon_dir = os.path.join(base_dir, "favicon")
+            FileUtils.ensure_directory(favicon_dir)
+            
+            # Determine file extension
+            parsed_favicon = urlparse(favicon_url)
+            filename = os.path.basename(parsed_favicon.path) or "favicon.ico"
+            if not os.path.splitext(filename)[1]:
+                filename += ".ico"  # Default extension for favicons
+            
+            favicon_path = os.path.join(favicon_dir, filename)
+            
+            # Skip if already exists and not empty
+            if os.path.exists(favicon_path) and os.path.getsize(favicon_path) > 0:
+                return favicon_path
+            
+            # Download favicon
+            headers = {
+                "Accept": "image/*,*/*;q=0.8",
+                "Sec-Fetch-Dest": "image",
+                "Sec-Fetch-Mode": "no-cors",
+                "Sec-Fetch-Site": "same-origin"
+            }
+            
+            response = await self.http_client.get(favicon_url, headers)
+            response.raise_for_status()
+            
+            # Validate and save content
+            if len(response.content) > 0:
+                with open(favicon_path, "wb") as f:
+                    f.write(response.content)
+                print(f"Downloaded favicon: {favicon_path}")
+                return favicon_path
+            else:
+                print(f"Empty favicon content for {favicon_url}")
+                
+        except Exception as e:
+            print(f"Failed to download favicon {favicon_url}: {e}")
+        
+        return None
+    
     def fix_asset_urls_in_html(self, html: str, page_url: str, styles: List[str], scripts: List[str], base_dir: str) -> str:
         """Fix asset URLs in HTML to point to downloaded local files."""
         try:

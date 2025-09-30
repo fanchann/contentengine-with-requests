@@ -58,8 +58,8 @@ class OutputWriterService(IOutputWriter):
                 json.dump(items, f, indent=2, ensure_ascii=False)
             print(f"Saved JSON: {json_path}")
     
-    async def save_html(self, url: str, html: str, styles: List[str], scripts: List[str]):
-        """Save HTML page with fixed asset URLs."""
+    async def save_html(self, url: str, html: str, styles: List[str], scripts: List[str]) -> str:
+        """Save HTML page with fixed asset URLs and return path to saved file."""
         from ..utils.url_utils import UrlUtils
         
         domain, _ = self._get_domain_info(url)
@@ -82,7 +82,7 @@ class OutputWriterService(IOutputWriter):
                 html_path = os.path.join(base_dir, "index.html")
         else:
             # For non-root paths, create directory structure
-            safe_path = re.sub(r"[^\w\-./]", "_", path)
+            safe_path = re.sub(r"[^\w\-.]", "_", path)
             if parsed.query:
                 # Use base64 encoding of full URL for directory name
                 url_b64 = UrlUtils.generate_url_base64(url)
@@ -101,6 +101,8 @@ class OutputWriterService(IOutputWriter):
         # Write HTML file
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(fixed_html)
+        
+        return html_path
     
     def _sanitize_domain_name(self, domain: str) -> str:
         """Sanitize domain name for use as filename."""

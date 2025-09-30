@@ -47,6 +47,11 @@ class IAssetDownloader(ABC):
     def fix_asset_urls_in_html(self, html: str, page_url: str, styles: List[str], scripts: List[str], base_dir: str) -> str:
         """Fix asset URLs in HTML to point to local files."""
         pass
+    
+    @abstractmethod
+    async def download_favicon(self, soup: BeautifulSoup, page_url: str) -> Optional[str]:
+        """Download favicon and return path to saved file."""
+        pass
 
 
 class IUrlNormalizer(ABC):
@@ -82,8 +87,8 @@ class IOutputWriter(ABC):
         pass
     
     @abstractmethod
-    async def save_html(self, url: str, html: str, styles: List[str], scripts: List[str]):
-        """Save HTML page."""
+    async def save_html(self, url: str, html: str, styles: List[str], scripts: List[str]) -> str:
+        """Save HTML page and return path to saved file."""
         pass
 
 

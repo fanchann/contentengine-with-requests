@@ -109,27 +109,24 @@ class S3Service:
         if not os.path.exists(screenshot_path):
             return None
             
-        # Generate S3 key following new folder structure: tld/tld.domain/screenshot_{path}.png
+        # Generate S3 key following new folder structure: tld/tld.domain/screenshot_{path_or_hash}.png
         domain, _ = UrlUtils.get_domain_info(url)
         tld, domain_name = UrlUtils.get_tld_and_domain_name(domain)
         
         parsed = urlparse(url)
         path = parsed.path.strip("/")
+        query = parsed.query
         
-        # Create S3 key path
-        if not path:
-            if parsed.query:
-                url_b64 = UrlUtils.generate_url_base64(url)
-                s3_key = f"{tld}/{tld}.{domain_name}/screenshot_index-{url_b64}.{self.config.screenshot_format}"
-            else:
-                s3_key = f"{tld}/{tld}.{domain_name}/screenshot_index.{self.config.screenshot_format}"
+        # Check if URL is root domain (no path/query) or has long URL
+        is_root = not path and not query
+        
+        if is_root:
+            # Simple root domain: screenshot_index.png
+            s3_key = f"{tld}/{tld}.{domain_name}/screenshot_index.{self.config.screenshot_format}"
         else:
-            safe_path = __import__('re').sub(r"[^\w\-./]", "_", path)
-            if parsed.query:
-                url_b64 = UrlUtils.generate_url_base64(url)
-                s3_key = f"{tld}/{tld}.{domain_name}/screenshot_{safe_path}-{url_b64}.{self.config.screenshot_format}"
-            else:
-                s3_key = f"{tld}/{tld}.{domain_name}/screenshot_{safe_path}.{self.config.screenshot_format}"
+            # URL with path or query: use base64 hash of full URL
+            url_hash_b64 = UrlUtils.generate_url_base64(url)
+            s3_key = f"{tld}/{tld}.{domain_name}/{url_hash_b64}.{self.config.screenshot_format}"
         
         return self.upload_file(
             screenshot_path, 

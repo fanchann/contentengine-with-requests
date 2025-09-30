@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from typing import Dict, List, Set, Optional
 from datetime import datetime
@@ -132,17 +133,40 @@ class PriorityCrawler:
                 soup, task.url, task
             )
             
-            # Save HTML page
-            await self.output_writer.save_html(task.url, html, styles, scripts)
+            # Save HTML page and get local path
+            html_local_path = await self.output_writer.save_html(task.url, html, styles, scripts)
             
-            # Upload HTML to S3 if available
-            if self.s3_service:
-                await self._upload_html_to_s3(task.url)
+            # Download favicon and get local path
+            icon_local_path = await self.asset_downloader.download_favicon(soup, task.url)
             
-            # Extract content
+            # Extract content with local paths first
             content_output = self.content_extractor.extract_content(
-                task.url, soup, styles, scripts, response
+                task.url, soup, styles, scripts, response, html_local_path, icon_local_path
             )
+            
+            # Extract and queue new URLs BEFORE S3 uploads to avoid timeout
+            await self._process_discovered_links(soup, task)
+            
+            # Upload HTML to S3 if available and get S3 URL
+            html_s3_url = None
+            if self.s3_service and html_local_path:
+                html_s3_url = await self._upload_html_to_s3_and_get_url(html_local_path, task.url)
+            
+            # Upload favicon to S3 if available and get S3 URL
+            icon_s3_url = None
+            if self.s3_service and icon_local_path:
+                icon_s3_url = await self._upload_favicon_to_s3_and_get_url(icon_local_path, task.url)
+            
+            # Use S3 URLs if available, otherwise use local paths
+            final_html_path = html_s3_url if html_s3_url else html_local_path
+            final_icon_path = icon_s3_url if icon_s3_url else icon_local_path
+            
+            # Update content output with S3 URLs
+            if html_s3_url:
+                content_output.html_path = html_s3_url
+            if icon_s3_url:
+                content_output.icon_path = icon_s3_url
+            
             self.content_outputs.append(content_output)
             
             # Upload screenshot to S3 if available
@@ -157,9 +181,6 @@ class PriorityCrawler:
             
             # Add to CSV data
             self._add_csv_row(task, content_output)
-            
-            # Extract and queue new URLs
-            await self._process_discovered_links(soup, task)
             
             # Apply delay if configured
             if self.config.delay > 0:
@@ -231,8 +252,8 @@ class PriorityCrawler:
             "crawled_at": datetime.now().isoformat(),
         })
     
-    async def _process_discovered_links(self, soup: BeautifulSoup, task: CrawlTask):
-        """Process discovered links and add new tasks."""
+    async def _process_discovered_links(self, soup, task: CrawlTask):
+        """Process discovered links and add to task queue."""
         # Check if timeout has been exceeded before processing more links
         if self.start_time and (time.time() - self.start_time) * 1000 > self.config.timeout_ms:
             return
@@ -240,6 +261,7 @@ class PriorityCrawler:
         links = self.content_extractor.extract_links(soup)
         current_domain, current_base = self.url_normalizer.get_domain_info(task.url)
         
+        links_added = 0
         for link in links:
             absolute_url = self.url_normalizer.normalize_url(task.url, link)
             if not absolute_url:
@@ -255,17 +277,21 @@ class PriorityCrawler:
             if not priority:
                 continue
             
-            # Create child task (depth is no longer used for limiting, just for tracking)
+            # Create child task
             child_task = CrawlTask(
                 url=absolute_url,
                 priority=priority,
-                depth=task.depth + 1,  # Still track depth for informational purposes
+                depth=task.depth + 1,
                 root_domain=task.root_domain or f"{urlparse(task.url).scheme}://{urlparse(task.url).netloc}",
                 parent_domain=current_domain,
                 root_base_domain=task.root_base_domain,
             )
             
             await self.task_queue.add_task(child_task)
+            links_added += 1
+        
+        if links_added > 0:
+            print(f"Found {len(links)} links, added {links_added} new tasks from {task.url}")
     
     async def _save_outputs(self):
         """Save all outputs."""
@@ -284,6 +310,37 @@ class PriorityCrawler:
             print(f"Failed to upload screenshot to S3: {e}")
         return None
     
+    async def _upload_html_to_s3_and_get_url(self, html_local_path: str, url: str) -> Optional[str]:
+        """Upload HTML file to S3 and return S3 URL."""
+        try:
+            if not self.s3_service or not html_local_path:
+                return None
+                
+            public_url = self.s3_service.upload_html(html_local_path, url)
+            if public_url:
+                print(f"HTML uploaded to S3: {os.path.basename(html_local_path)} -> {public_url}")
+                return public_url
+            
+        except Exception as e:
+            print(f"Failed to upload HTML to S3: {e}")
+        return None
+    
+    async def _upload_favicon_to_s3_and_get_url(self, favicon_local_path: str, url: str) -> Optional[str]:
+        """Upload favicon file to S3 and return S3 URL."""
+        try:
+            if not self.s3_service or not favicon_local_path:
+                return None
+            
+            # Use the asset upload method for favicon
+            public_url = self.s3_service.upload_asset(favicon_local_path, url, "")
+            if public_url:
+                print(f"Favicon uploaded to S3: {os.path.basename(favicon_local_path)} -> {public_url}")
+                return public_url
+            
+        except Exception as e:
+            print(f"Failed to upload favicon to S3: {e}")
+        return None
+
     async def _upload_html_to_s3(self, url: str):
         """Upload HTML file to S3."""
         try:

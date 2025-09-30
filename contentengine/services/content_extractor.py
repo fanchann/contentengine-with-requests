@@ -20,7 +20,7 @@ def uri_fixer(src: str, base_url: URL) -> str:
 class ContentExtractorService(IContentExtractor):
     """Service for extracting content from web pages."""
     
-    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[object] = None) -> ContentOutput:
+    def extract_content(self, url: str, soup: BeautifulSoup, styles: List[str], scripts: List[str], response: Optional[object] = None, html_path: Optional[str] = None, icon_path: Optional[str] = None) -> ContentOutput:
         """Extract content from parsed HTML."""
         title = self.get_title(soup)
         metatags = self.get_metatags(soup)
@@ -37,8 +37,8 @@ class ContentExtractorService(IContentExtractor):
             # Get screenshot path if available
             if hasattr(response, 'screenshot_path'):
                 screenshot_path = response.screenshot_path
-        print("DEBUG: ", str(soup))
-        print("DEBUG: ", self._create_raw_html_checksum(str(soup)))
+        # print("DEBUG: ", str(soup))
+        # print("DEBUG: ", self._create_raw_html_checksum(str(soup)))
         
         return ContentOutput(
             url=url,
@@ -50,11 +50,13 @@ class ContentExtractorService(IContentExtractor):
             scripts=scripts if scripts else None,
             stylesheets=stylesheets if stylesheets else None,
             screenshot_path=screenshot_path,
+            html_path=html_path,
+            icon_path=icon_path,
             checksums=Checksum(
                 raw_html=self._create_raw_html_checksum(str(soup)),
                 parsed_html="still null",
             ) if soup else None,
-            cannonical_url=self._get_cannonical_url(soup, url)
+            canonical_url=self._get_cannonical_url(soup, url)
         )
     
     def extract_links(self, soup: BeautifulSoup) -> List[str]:
@@ -143,18 +145,56 @@ class ContentExtractorService(IContentExtractor):
                 scripts.add(fixed_src)
         return list(scripts)
 
-    def get_stylesheets(self, soup: BeautifulSoup, url: str) -> List[str]:
-        """Extract stylesheet URLs from HTML."""
+    def get_stylesheets(self, soup: BeautifulSoup, url: str) -> List[dict]:
+        """Extract link tags from HTML with complete attributes."""
         base_url = URL(url)
-        stylesheets = []
+        links = []
         
-        for tag in soup.find_all("link", rel="stylesheet"):
-            href = tag.get("href")
-            if href:
-                if not href.startswith(("http://", "https://")):
-                    href = str(base_url.join(href))
-                stylesheets.append(href)
-        return stylesheets
+        # Find all link tags (not just stylesheets)
+        for tag in soup.find_all("link"):
+            link_attrs = {}
+            
+            # Extract all attributes from link tag
+            for attr, value in tag.attrs.items():
+                if attr == "href" and value:
+                    # Convert relative URLs to absolute
+                    if not value.startswith(("http://", "https://", "data:", "mailto:", "tel:")):
+                        value = str(base_url.join(value))
+                elif attr == "rel" and isinstance(value, list):
+                    # Convert rel attribute from list to string (join multiple values with space)
+                    value = " ".join(value)
+                
+                link_attrs[attr] = value
+            
+            # Only include links that have href attribute
+            if "href" in link_attrs:
+                links.append(link_attrs)
+                
+        return links
+    
+    def get_favicon_url(self, soup: BeautifulSoup, url: str) -> Optional[str]:
+        """Extract favicon URL from HTML."""
+        base_url = URL(url)
+        
+        # Check for various favicon link tags
+        favicon_selectors = [
+            'link[rel="icon"]',
+            'link[rel="shortcut icon"]', 
+            'link[rel="apple-touch-icon"]',
+            'link[rel="apple-touch-icon-precomposed"]'
+        ]
+        
+        for selector in favicon_selectors:
+            link_tag = soup.select_one(selector)
+            if link_tag and link_tag.get("href"):
+                href = link_tag.get("href")
+                if href.startswith(("http://", "https://")):
+                    return href
+                else:
+                    return str(base_url.join(href))
+        
+        # If no favicon link found, try default favicon.ico
+        return str(base_url.join("/favicon.ico"))
     
     def _extract_http_headers(self, response: object) -> Optional[Dict[str, str]]:
         """Extract HTTP headers from response object."""

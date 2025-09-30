@@ -1,5 +1,6 @@
 from typing import List, Optional
 from pydantic import AnyHttpUrl, BaseModel, Field
+from typing import Any
 
 
 class MetaTag(BaseModel):
@@ -30,8 +31,8 @@ class ContentOutput(BaseModel):
     scripts: Optional[List[str]] = Field(
         None, description="List of script urls found in page"
     )
-    stylesheets: Optional[List[str]] = Field(
-        None, description="List of stylesheet urls found in page"
+    stylesheets: Optional[list[dict[str, Any]]] = Field(
+        None, description="List of <link> tags found in page"
     )
     checksums: Optional[Checksum] = Field(
         None, description="Checksums of raw and parsed html"
@@ -39,6 +40,12 @@ class ContentOutput(BaseModel):
     screenshot_path: Optional[str] = Field(
         None, description="Path to screenshot image file"
     )
-    cannonical_url: Optional[AnyHttpUrl] = Field(
-        None, description="Cannonical URL if specified in page"
+    html_path: Optional[str] = Field(
+        None, description="Path to html file"
+    )
+    icon_path: Optional[str] = Field(
+        None, description="Path to favicon file"
+    )
+    canonical_url: Optional[AnyHttpUrl] = Field(
+        None, description="Canonical URL if specified in page"
     )
