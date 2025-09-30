@@ -1,3 +1,4 @@
+import hashlib
 from typing import List, Dict, Optional
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -6,6 +7,7 @@ from typing import Any
 from contentengine.core.interfaces import IContentExtractor
 from contentengine.models.content import ContentOutput, MetaTag
 from contentengine.utils.file_utils import FileUtils
+from contentengine.models.content import Checksum
 
 def uri_fixer(src: str, base_url: URL) -> str:
     if src.startswith("data:"):
@@ -35,6 +37,8 @@ class ContentExtractorService(IContentExtractor):
             # Get screenshot path if available
             if hasattr(response, 'screenshot_path'):
                 screenshot_path = response.screenshot_path
+        print("DEBUG: ", str(soup))
+        print("DEBUG: ", self._create_raw_html_checksum(str(soup)))
         
         return ContentOutput(
             url=url,
@@ -46,6 +50,10 @@ class ContentExtractorService(IContentExtractor):
             scripts=scripts if scripts else None,
             stylesheets=stylesheets if stylesheets else None,
             screenshot_path=screenshot_path,
+            checksums=Checksum(
+                raw_html=self._create_raw_html_checksum(str(soup)),
+                parsed_html="still null",
+            ) if soup else None,
             cannonical_url=self._get_cannonical_url(soup, url)
         )
     
@@ -164,3 +172,7 @@ class ContentExtractorService(IContentExtractor):
             else:
                 return urljoin(base_url, href)
         return None
+    
+    def _create_raw_html_checksum(self, html: str) -> str:
+        """Create a checksum of the raw HTML content, useful for change detection use sha256."""
+        return hashlib.sha256(html.encode('utf-8')).hexdigest()
