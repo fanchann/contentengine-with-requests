@@ -5,7 +5,7 @@ from typing import Dict, List
 @dataclass
 class CrawlerConfig:
     """Configuration for the web crawler."""
-    max_depth: int = 3
+    timeout_ms: int = 30000  # Crawling timeout in milliseconds
     delay: float = 0.0
     concurrency: int = 8
     timeout_total: float = 30.0

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Dict, List, Set, Optional
 from datetime import datetime
 from urllib.parse import urlparse
@@ -42,9 +43,13 @@ class PriorityCrawler:
         self.csv_data: List[Dict[str, str]] = []
         self.content_outputs: List[ContentOutput] = []
         self.lock = asyncio.Lock()
+        self.start_time: Optional[float] = None
     
     async def crawl_async(self, start_url: str) -> List[ContentOutput]:
         """Main crawling method."""
+        # Initialize start time for timeout tracking
+        self.start_time = time.time()
+        
         # Create seed task
         seed_task = self._create_seed_task(start_url)
         await self.task_queue.add_task(seed_task)
@@ -94,9 +99,14 @@ class PriorityCrawler:
     
     async def _crawl_page(self, task: CrawlTask):
         """Crawl a single page."""
-        # Check depth and visited status
+        # Check timeout and visited status
         async with self.lock:
-            if task.url in self.visited or task.depth > self.config.max_depth:
+            # Check if timeout has been exceeded
+            if self.start_time and (time.time() - self.start_time) * 1000 > self.config.timeout_ms:
+                print(f"Crawling timeout reached ({self.config.timeout_ms}ms), stopping")
+                return
+            
+            if task.url in self.visited:
                 return
             self.visited.add(task.url)
         
@@ -223,7 +233,8 @@ class PriorityCrawler:
     
     async def _process_discovered_links(self, soup: BeautifulSoup, task: CrawlTask):
         """Process discovered links and add new tasks."""
-        if task.depth >= self.config.max_depth:
+        # Check if timeout has been exceeded before processing more links
+        if self.start_time and (time.time() - self.start_time) * 1000 > self.config.timeout_ms:
             return
         
         links = self.content_extractor.extract_links(soup)
@@ -244,11 +255,11 @@ class PriorityCrawler:
             if not priority:
                 continue
             
-            # Create child task
+            # Create child task (depth is no longer used for limiting, just for tracking)
             child_task = CrawlTask(
                 url=absolute_url,
                 priority=priority,
-                depth=task.depth + 1,
+                depth=task.depth + 1,  # Still track depth for informational purposes
                 root_domain=task.root_domain or f"{urlparse(task.url).scheme}://{urlparse(task.url).netloc}",
                 parent_domain=current_domain,
                 root_base_domain=task.root_base_domain,

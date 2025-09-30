@@ -18,7 +18,7 @@ else:
 async def main():
     # Configure crawler with environment variables
     config = CrawlerConfig(
-        max_depth=int(os.getenv("CRAWLER_MAX_DEPTH", 1)),
+        timeout_ms=int(os.getenv("CRAWLER_TIMEOUT_MS", 30000)),
         delay=float(os.getenv("CRAWLER_DELAY", 1.0)),
         concurrency=int(os.getenv("CRAWLER_CONCURRENCY", 5)),
         timeout_total=float(os.getenv("CRAWLER_TIMEOUT_TOTAL", 30.0)),
@@ -37,7 +37,7 @@ async def main():
         s3_bucket_name=os.getenv("MINIO_BUCKET_NAME", "crawler-assets"),
     )
     
-    print(f"Crawler config: depth={config.max_depth}, delay={config.delay}s, concurrency={config.concurrency}")
+    print(f"Crawler config: timeout={config.timeout_ms}ms, delay={config.delay}s, concurrency={config.concurrency}")
     print(f"Screenshots: {'enabled' if config.enable_screenshots else 'disabled'}")
     print(f"S3 uploads: {'enabled' if config.s3_endpoint else 'disabled'}")
     print()
@@ -47,7 +47,10 @@ async def main():
     crawler = container.get_crawler()
     
     # Get start URL from environment or use default
-    start_url = os.getenv("CRAWLER_START_URL", "https://example.com")
+    start_url = os.getenv("CRAWLER_START_URL", "")
+    if not start_url:
+        print("No start URL provided. Please set the CRAWLER_START_URL environment variable.")
+        return
     print(f"Starting crawl from: {start_url}")
     
     try:
